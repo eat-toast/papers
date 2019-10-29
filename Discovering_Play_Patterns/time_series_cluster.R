@@ -1,7 +1,9 @@
+setwd('D:\\git_R\\papers\\Discovering_Play_Patterns')
 ########################################################################################################
 library(parallelDist) # https://www.rdocumentation.org/packages/parallelDist/versions/0.1.1/topics/parDist
 source("corFuncPtr.R") # 자동으로 패키지 설치 안내문으뜨면 설치하면 된다.
 source('df_prepro.R')
+source('group_vis.R')
 library(data.table) # read CSV file
 library(dplyr)
 library(reshape)
@@ -38,13 +40,22 @@ rownames(COR)<- nid_list
 
 
 # trend 계산
-for(i in 1:length(nid_list) ){
-  idx<- which(data$nid == nid_list[i])
-  
-  qq <- forecast::ma(data[idx,'pt'], order = MA)
-  qq <- qq[!is.na(qq)]
+ # nid(유저)별 모든 seq데이터를 생성해 놨기 때문에 아래와 같이 수행 가능
+ # max_rn 의 크기만큼 nid별 인덱스를 생성
+start_list<- seq(1, nrow(data), by = max_rn)
+end_list<- seq(1+max_rn-1, nrow(data)+max_rn-1, by = max_rn)
+
+temp_list<- vector(mode ='list', length = length(nid_list))
+for(i in 1:length(nid_list)){
+  temp_list[[i]]<- start_list[i] : end_list[i]  
+}
+for(i in 1:length(nid_list)){
+  qq <- forecast::ma(data[temp_list[[i]],'pt'], order = MA)
+  qq <- qq[!is.na(qq)]  
   COR[i,]<-qq
 }
+
+
 
 
 # COR + trend 구하기
@@ -73,44 +84,6 @@ table(sub_grp)
 casted_data<- cast(data, nid ~ rn)
 pt_matrix<- as.matrix(casted_data[, -1])
 
-# cluster_1
-group_num = 1
-
-group_vis<- function(data, group_num){
-  idx<- which(sub_grp== group_num)
-  idx<- which( as.character(data$nid) %in% names(sub_grp[idx]) )
-  
-  temp<- data[idx,]
-  temp$nid<- as.factor(temp$nid)
-  
-  p1<-ggplot(temp,  aes(rn, nid)) +
-    geom_tile(aes(fill = pt)) +
-    scale_fill_gradientn(colors = rev(brewer.pal(11, "RdBu"))) +
-    scale_y_discrete(limits = rev(unique(temp$nid))) +
-    ggtitle(paste('User Group',group_num, "by 1 DAY")) +
-    theme(panel.grid.major = element_blank(),
-          panel.grid.minor = element_blank(),
-          panel.border = element_blank(),
-          panel.background = element_blank(),
-          axis.text.x = element_text(angle = 90),
-          axis.ticks.y=element_blank(),
-          axis.text.y=element_blank())
-  
-  
-  idx<- which(sub_grp==group_num)
-  group_1<- data.frame(mean_pt =colMeans(pt_matrix[idx,]), group = 1:length(colMeans(pt_matrix[idx,])))
-  
-  p2<- ggplot(group_1, aes(group, mean_pt))+
-    geom_line(size=2)+ #ylim(0,350)+
-    ggtitle("User Group Mean Play Time")+
-    theme(axis.ticks.x=element_blank(),
-          
-          axis.title.x=element_blank())
-  
-  
-  p3<- arrangeGrob(p2, p1, nrow=2, top= paste('Group', group_num))
-  return(p3)  
-}
 
 vis_group_1<- group_vis(data, group_num = 1)
 grid.arrange(vis_group_1)
