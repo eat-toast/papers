@@ -124,11 +124,7 @@ bq_auth(path)
 projectid="lgsz-0718"
 
 # Set your query
-group_num = 1
-grp_nid<- names( sub_grp[ which(sub_grp == group_num)] )
-
-
-sql <- paste0(" 
+level_sql <- paste0(" 
               with sample as (
               SELECT nid,  max_pl
               FROM sz_dw.f_user_map
@@ -136,18 +132,30 @@ sql <- paste0("
               and nid in ('",  paste( grp_nid, collapse = "','" ), "')"
               , ")
               
-              select 1.0 * sum(lv) / count(distinct nid)
+              select 1.0 * sum(lv) / count(distinct nid) as avg_pl
               from sample as A
               LEFT JOIN sz_dw.dim_hero_lv as B
               ON A.max_pl = B.lv_hero
               "
 )
 
+bigquery_sql<- function(sql, projectid, num_group){
+  result<- data.frame()
+  for( num in seq_len(num_group) ){
+    grp_nid<- names( sub_grp[ which(sub_grp == num)] )
+    
+    # Run the query and store the data in a dataframe
+    tb <- bq_project_query(query=sql,x=projectid) 
+    df <- bq_table_download(tb)
+    result<- rbind(result, df)
+  }
+  
+  return(result)
+}
 
-# Run the query and store the data in a dataframe
-tb <- bq_project_query(query=sql,x=projectid) 
-df <- bq_table_download(tb)
-print(df)
+
+
+
 
 
 
