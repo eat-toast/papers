@@ -221,11 +221,15 @@ for use_data_cnt in range(6, 40):
     
     error_cnt = sample_cnt+1
     for col in colnames:
-        #mape = mean_absolute_percentage_error(pred.loc[error_cnt:,col], real.loc[error_cnt:,col])
-        mse = mean_squared_error(pred.loc[error_cnt:,col], real.loc[error_cnt:,col])
-        df_error.loc[error_cnt, col] = mse
+        if (real.loc[error_cnt:,col].values == 0)[0]:
+            df_error.loc[error_cnt, col] = 0
+        else:
+            mape = mean_absolute_percentage_error(pred.loc[error_cnt:,col], real.loc[error_cnt:,col])
+            #mse = mean_squared_error(pred.loc[error_cnt:,col], real.loc[error_cnt:,col])
+            df_error.loc[error_cnt, col] = mape
 
 
 print(df_error)
 
-df_error.loc[:,colnames].sum(axis = 1).plot()
+df_error.loc[:,colnames].iloc[:26].sum(axis = 1).plot()
+
