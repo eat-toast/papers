@@ -21,13 +21,18 @@ def mean_absolute_percentage_error_for_matrix(y_true, y_pred):
 
     return np.mean( tt2.values ) * 100
 
+def mean_absolute_error_for_matrix(y_true, y_pred):
+    tt2 = np.abs( (y_true - y_pred))
+
+    return np.mean( tt2.values )
+
 
 def make_sample_data(df, min_data):
     df_s = df[ df.launching_diff <= sample_cnt ] # ex 론칭 7일차 데이터 이용
     idx = df.launching_diff <= sample_cnt
 
     temp = df.loc[idx,].groupby('reg_datekey')['reg_diff'].max().reset_index()
-    temp = temp.loc[temp.reg_diff >= min_data, 'reg_datekey']
+    temp = temp.loc[temp.reg_diff >= (min_data-1), 'reg_datekey']
 
     df_s = df_s.loc[df_s.reg_datekey.isin(temp)]
 
@@ -48,6 +53,7 @@ def sqldf(qry):
 
 
 query = '''
+-- 통합
 with sample as(
   select A.reg_datekey, A.datekey, reg_uu, date_diff(A.datekey, A.reg_datekey, DAY) as reg_diff, DAU
   , coalesce(DAU , 0)/ reg_uu as retention
@@ -57,8 +63,8 @@ with sample as(
     select reg_datekey, datekey, count(distinct nid) as DAU, sum(daily_revenue) as daily_revenue
     from eh_dw.f_user_map
     where login_flag = 1
-    and datekey>= '2019-11-21' and datekey<= '2020-03-31'
-    and reg_datekey <=  '2019-11-30'
+    and datekey>= '2019-12-01' and datekey<= '2020-04-20'
+    and reg_datekey in('2019-12-01', '2019-12-02', '2019-12-03')
     group by reg_datekey, datekey
   )as A
   INNER JOIN(
@@ -66,8 +72,8 @@ with sample as(
     select reg_datekey, count(distinct nid) as reg_uu
     from eh_dw.f_user_map
     where nru = 1
-    and datekey>= '2019-11-21' and datekey<= '2020-03-31'
-    and reg_datekey <=  '2019-11-30'
+    and datekey>= '2019-12-01' and datekey<= '2020-04-20'
+    and reg_datekey in('2019-12-01', '2019-12-02', '2019-12-03')
     group by reg_datekey
   )as B
   ON A.reg_datekey = B.reg_datekey
@@ -85,13 +91,13 @@ select A.datekey, A.reg_datekey, B.daily_revenue
 from (
   select *
   from sample2
-  where reg_diff <= 40
+  where launching_diff <= 40
 )as A
 INNER JOIN (
   select reg_datekey,datekey, sum(daily_revenue) as daily_revenue
   from eh_dw.f_user_map
-  where datekey>= '2019-11-21' and datekey<= '2020-03-31'
-  and reg_datekey <=  '2019-11-30'
+  where datekey>= '2019-12-01' and datekey<= '2020-04-20'
+  and reg_datekey in('2019-12-01', '2019-12-02', '2019-12-03')
   group by reg_datekey,datekey
 )as B
 ON A.datekey = B.datekey and A.reg_datekey = B.reg_datekey
@@ -104,6 +110,7 @@ df = df.fillna(0)
 print(df.head(3))
 
 df.reg_datekey = df.reg_datekey.dt.strftime('%Y-%m-%d')
+df.datekey = df.datekey.dt.strftime('%Y-%m-%d')
 reg_datekey = df.reg_datekey.unique()  # 가입일 정보
 
 # 실측치 - 예측치 차이 저장
@@ -118,7 +125,7 @@ for use_data_cnt in range(6, 39):
     sample_cnt = use_data_cnt
 
     # 분석에 사용할 데이터 df_s( df_sample) 로 정의
-    df_s = make_sample_data(df, 6)
+    df_s = make_sample_data(df, min_data = 7)
     colnames = df_s.reg_datekey.unique()  # 가입일 정보
     # 전처리
     N = df_s.reg_diff.max() +1 # 데이터 갯수 최댓값
@@ -127,6 +134,8 @@ for use_data_cnt in range(6, 39):
     df_N = df_s.groupby('reg_datekey')['reg_diff'].max() # 가입일별 데이터 갯수
     df_N = pd.DataFrame(df_N.values).T
     df_N.columns = colnames
+
+    index_datekey = df.datekey.unique()[:M]
 
 
     x_bar = df_s.groupby('reg_datekey')['retention'].mean() # 평균
@@ -178,10 +187,16 @@ for use_data_cnt in range(6, 39):
         DAU_hat[col] = df_s.loc[idx, 'DAU'].reset_index(drop=True)
 
         not_null_rownumber = np.where(DAU_hat[col].isnull())[0][0]
-
         for j in range(M):
             if j >= not_null_rownumber :
-                DAU_hat.loc[j, col] = DAU_hat.loc[0, col] * survival_df_s.loc[j-1, col]
+                DAU_hat.loc[j, col] = DAU_hat.loc[0, col] * survival_df_s.loc[j, col]
+
+
+    DAU_hat.index = index_datekey
+    for col in colnames:
+        shift_cnt = (DAU_hat.index < col).sum()
+        DAU_hat[col] = DAU_hat[col].shift(shift_cnt, fill_value=0)
+    DAU_hat.reset_index(drop=True, inplace=True)
 
 
 
@@ -209,37 +224,26 @@ for use_data_cnt in range(6, 39):
     # 예측의 결과값 저장
     pred = pd.DataFrame(np.zeros(shape = (M, ncol)))
     pred.columns = colnames
-    # pred에 첫 7일은 넣어주기. --> 이미 알고 있는 내용
-
 
     # 실제 데이터 저장
     real = pred.copy(deep = True)
 
     for col in colnames:
+        idx = DAU_hat[col] == 0
+        min_n = idx.sum()
+
         max_n = df_N[col].values[0]
 
-        for j in range(M):
-            if j <= max_n :
-                # 기존에 이미 알고 있는 값
-                # pred.loc[j, col] = ARPU_hat.loc[j, col] * DAU_hat.loc[j, col] * survival_df_s.loc[:j,col].sum()  # 실제값으로 바꾸기!!!
-                # pred.loc[j,col] = df_s.loc[j, 'daily_revenue']
-                pred.loc[j,col] = df_s.loc[df_s.reg_datekey == col,'daily_revenue'].iloc[j,]
-            elif max_n < j :
-                pred.loc[j, col] = ARPU_hat.loc[j-1, col] * DAU_hat.loc[j, col] #* survival_df_s.loc[:j, col].sum()
+        # 기존에 이미 알고 있는 값
+        temp_real_s = df_s.loc[df_s.reg_datekey == col, 'daily_revenue'].reset_index(drop=True)
+        pred.loc[min_n:(min_n+max_n), col] = temp_real_s.values
 
-
-
-                ### 실제 매출액과 비교
-        real[col] = df.loc[df.reg_datekey == col, 'daily_revenue'].reset_index(drop=True)
-
-
-
-    # f, ax = plt.subplots(1, 1)
-    # ax.plot(real[col], label = 'real')
-    # ax.legend(loc = 'upper right')
-    # ax.plot(pred[col], label = 'pred')
-    # ax.legend(loc = 'upper right')
-    # plt.show()
+        for j in range(min_n, M):
+            if min_n+max_n < j :
+                pred.loc[j, col] = ARPU_hat.loc[j-1, col] * DAU_hat.loc[j, col]
+        ### 실제 매출액과 비교
+        temp_real = df.loc[df.reg_datekey == col, 'daily_revenue'].reset_index(drop=True)
+        real.loc[min_n:M, col] = temp_real.values[: M-min_n]
 
 
     ### error 계산
@@ -256,8 +260,8 @@ for use_data_cnt in range(6, 39):
     #         mape = mean_absolute_percentage_error(pred.loc[not_null_rownumber:,col], real.loc[not_null_rownumber:,col])
     #         mse = mean_squared_error(pred.loc[not_null_rownumber:,col], real.loc[not_null_rownumber:,col])
     #         df_error.loc[use_data_cnt, col] = mse
-
-    mape = mean_absolute_percentage_error_for_matrix(real.loc[not_null_rownumber:, colnames], pred.loc[not_null_rownumber:, colnames])
+    pred_idx = df_N.loc[0].max()+1
+    mape = mean_absolute_error_for_matrix(real.loc[pred_idx:, colnames], pred.loc[pred_idx:, colnames])
     df_error.loc[use_data_cnt, 'error_mape'] = mape
     print(df_error)
 
@@ -265,8 +269,9 @@ for use_data_cnt in range(6, 39):
 df_error.loc[:,'error_mape'].plot()
 
 
-
-
+real.loc[:, colnames].sum(axis = 1).plot()
+pred.loc[pred_idx:, colnames].sum(axis = 1).plot()
+pd.options.display.float_format = '{:.2f}'.format
 
 
 
