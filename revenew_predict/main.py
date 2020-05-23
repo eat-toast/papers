@@ -26,14 +26,20 @@ json_path = os.path.join(os.getcwd(),'bigquery', project_name + '.json')
 credentials = service_account.Credentials.from_service_account_file(json_path)
 
 
-def make_sample_data(df, use_data_cnt):
-    df_s = df[ df.reg_diff <= use_data_cnt ] # ex 론칭 7일차 데이터 이용
-    idx = df.reg_diff <= use_data_cnt
+def make_sample_data(raw_data, use_data_cnt):
+    # ex 론칭 7일차 데이터 이용
+    df_s = raw_data[raw_data.reg_diff <= use_data_cnt].copy(deep=True)
 
-    temp = df.loc[idx,].groupby('reg_datekey')['reg_diff'].max().reset_index()
+    idx = raw_data.reg_diff <= use_data_cnt
+
+    temp = raw_data.loc[idx,].groupby('reg_datekey')['reg_diff'].max().reset_index()
     temp = temp.loc[temp.reg_diff >= (use_data_cnt), 'reg_datekey']
 
     df_s = df_s.loc[df_s.reg_datekey.isin(temp)]
+
+    # 전처리
+    df_s.reg_datekey = df_s.reg_datekey.dt.strftime('%Y-%m-%d')
+    df_s.datekey = df_s.datekey.dt.strftime('%Y-%m-%d')
 
     return df_s
 
@@ -54,7 +60,7 @@ multiple_predict = True
 reg_date_range = pd.date_range(start = '2020-04-29', end = '2020-05-15' )
 reg_datekey_30 = max(reg_date_range) + datetime.timedelta(days=M)
 
-predict_date_range = pd.date_range(start = min(reg_date_range), end =  reg_datekey_30)
+predict_date_range = pd.date_range(start = min(reg_date_range), end = reg_datekey_30)
 
 
 real_df = pd.DataFrame(0,  index = predict_date_range, columns =predict_date_range) # 실제 매출액을 담아둘 공간
@@ -72,12 +78,12 @@ def ff(df, window_days = 7):
     # 론칭 후 6일 (0 ~ 6일 7개 데이터)만 이용하기
     use_data_cnt = 6
 
-    # 분석에 사용할 데이터 df_s( df_sample) 로 정의
-    df_s = make_sample_data(df, use_data_cnt)
+    # 분석에 사용할 데이터 df_s(df_sample) 로 정의
+    df_s = make_sample_data(raw_data = df, use_data_cnt= use_data_cnt)
     colnames = df_s.reg_datekey.unique()  # 가입일 정보
     ncol = len(colnames) # 컬럼 수
+    df.reg_datekey.unique()########################################################################
 
-    # 전처리
     N = df_s.reg_diff.max() + 1  # 데이터 갯수 최댓값
     M = 30  # df.groupby('reg_datekey')['reg_diff'].max().min()
     df_N = df_s.groupby('reg_datekey')['reg_diff'].max()  # 가입일별 데이터 갯수
@@ -165,20 +171,19 @@ def ff(df, window_days = 7):
 
 
 if multiple_predict:
-
+    # 쿼리 가져오기
     query = load_query(multiple_predict, project_name, reg_datekey_str = reg_date_range )
 
+    # 데이터 불러오기
     df = sqldf(query)
     df = df.fillna(0)
-    ## 전처리 --> 전체 유저들의 매출액
-    print(df.head(3))
 
-    df.reg_datekey = df.reg_datekey.dt.strftime('%Y-%m-%d')
-    df.datekey = df.datekey.dt.strftime('%Y-%m-%d')
-
+    # 실제, 예측 매출액 가져오기
     real, pred_ratio = ff(df)
-    ### 결과 저장
-    real_df.loc[reg_datekey_str:reg_datekey_30, reg_datekey_str] = real.values
+
+    # 결과 저장
+    real_df.loc[: (min(reg_date_range) + datetime.timedelta(days=M)), reg_date_range] = real.values
+
     pred_ratio_df.loc[reg_datekey_str:reg_datekey_30, reg_datekey_str] = pred_ratio.values
 
 

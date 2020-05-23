@@ -6,13 +6,14 @@ from matplotlib import pyplot as plt
 from matplotlib.ticker import AutoMinorLocator
 from scipy.optimize import curve_fit
 import numpy as np
+from sklearn.metrics import mean_squared_error
 
 pd.set_option('display.max_columns', 100)
 pd.set_option('display.max_colwidth',200)
 
 # 이삭 빅쿼리 접근 키
 json_dir = './bigquery'
-json_path = os.path.join(json_dir, 'EH' + '.json')
+json_path = os.path.join(os.getcwd(),'bigquery', 'EH' + '.json')
 credentials = service_account.Credentials.from_service_account_file(json_path)
 
 def sqldf(qry):
@@ -77,19 +78,28 @@ df = df.fillna(0)
 ## 전처리 --> 전체 유저들의 매출액
 print(df.head(3))
 
+colnames = df.reg_datekey.unique() # 가입일 정보
 df.reg_datekey = df.reg_datekey.dt.strftime('%Y-%m-%d')
 
+# 실측치 - 예측치 차이 저장
+df_error = pd.DataFrame(columns = colnames, index = range(30))
+df_error = df_error.reset_index()
+df_error.columns = ['use_data']+colnames
+
+
 # 분석에 사용할 데이터 df_s( df_sample) 로 정의
-df_s = df[df.reg_diff <= 6]
+sample_cnt = 6
+df_s = df[df.reg_diff <= sample_cnt]
 
 
 # 전처리
-colnames = df.reg_datekey.unique()
 N = df_s.reg_diff.max() +1 # 데이터 갯수 최댓값
 M = df.shape[0] # 예측단위
 df_N = df_s.groupby('reg_datekey')['reg_diff'].max() # 가입일별 데이터 갯수
 df_N = pd.DataFrame(df_N.values)
 df_N.columns = colnames
+
+
 
 
 x_bar = df_s.groupby('reg_datekey')['retention'].mean() # 평균
@@ -204,10 +214,10 @@ for col in colnames:
 
 
 
-f, ax = plt.subplots(1, 1)
-plt.plot(real[col])
-plt.plot(pred[col])
-plt.show()
+# f, ax = plt.subplots(1, 1)
+# plt.plot(real[col])
+# plt.plot(pred[col])
+# plt.show()
 
 
 ### error 계산
@@ -215,33 +225,17 @@ plt.show()
     # 2. MSE
     # 3. MAPE
 
-from sklearn.metrics import mean_absolute_error, mean_squared_error
-
-mean_absolute_error(pred.iloc[7:], real.iloc[7:])
-mean_squared_error(pred.iloc[7:], real.iloc[7:])
 
 def mean_absolute_percentage_error(y_true, y_pred):
     y_true, y_pred = np.array(y_true), np.array(y_pred)
     return np.mean(np.abs((y_true - y_pred) / y_true)) * 100
 
-mean_absolute_percentage_error(pred.iloc[7:], real.iloc[7:])
-
-y_true = [3, -0.5, 2, 7]
-y_pred = [2.5, 0.0, 2, 8]
-
-mean_absolute_percentage_error(y_true, y_pred)
-mean_absolute_error(y_true, y_pred)
+error_cnt = sample_cnt+1
+mape = mean_absolute_percentage_error(pred.iloc[error_cnt:], real.iloc[error_cnt:])
+mse = mean_squared_error(pred.iloc[error_cnt:], real.iloc[error_cnt:])
 
 
-f, ax = plt.subplots(1, 1)
-plt.plot(survival_df_s[col])
-plt.plot(df['retention'])
-plt.show()
-
-f, ax = plt.subplots(1, 1)
-plt.plot(DAU_hat[col])
-plt.plot(df['DAU'])
-plt.show()
+df_error.loc[error_cnt, '2019-11-23'] = mape
 
 
 
