@@ -33,19 +33,17 @@ def sqldf(qry):
     return output
 
 
-# 예측할 기간
-multiple_predict = True
+multiple_predict = True # 가입일자가 여러개인 경우 True 지정
+
 # model을 생성할 train 기간을 설정한다.
     # ex) RC론칭일부터 적당한 일자까지 array를 생성한다.
+reg_min_date, reg_max_date = '2020-05-28', '2020-06-11'
+predict_min_date, predict_max_date = reg_min_date, '2020-07-15'  # 예측할 마지막 일자
 
+reg_date_range = [d.strftime('%Y-%m-%d') for d in pd.date_range(reg_min_date, reg_max_date )] # 가입일 정보
+predict_date_range = [d.strftime('%Y-%m-%d') for d in pd.date_range(predict_min_date,predict_max_date)] # 예측 일자 정보
 
-reg_date_range = [d.strftime('%Y-%m-%d') for d in pd.date_range('2020-05-28','2020-06-11')]
-
-predict_min_date = min(reg_date_range)
-predict_max_date = '2020-07-15'
-predict_date_range = [d.strftime('%Y-%m-%d') for d in pd.date_range(predict_min_date,predict_max_date)]
-
-
+# 쿼리 불러오기
 query = load_query(multiple_predict, project_name, reg_datekey_str=reg_date_range, predict_min_date = predict_min_date, predict_max_date = predict_max_date)
 
 # 데이터 불러오기
@@ -53,18 +51,25 @@ df = sqldf(query)
 df = df.fillna(0)
 
 
-def make_sample_data(raw_data, use_data_cnt, max_data_cnt = 30):
+def make_sample_data(raw_data, min_data_cnt, max_data_cnt = 30):
     # ex 론칭 7일차 데이터 이용
+    '''
+    :param raw_data:     DB에서 가져온 정보
+    :param min_data_cnt: 분석에 필요한 최소 reg_diff (이것 보다는 커야 분석에 사용한다)
+    :param max_data_cnt: 분석에 사용할 최대 reg_diff 정보 (너무 크면 분석에 방해 된다)
+    :return:
+    '''
+    # max_data_cnt 보다 큰 정보는 가져오지 않는다. --> 추정에 의미가 없기 때문
+    raw_data = raw_data.loc[raw_data.reg_diff < max_data_cnt]
+
+    # 가입 일별 데이터 갯수 확인
+    reg_date_cond = raw_data.groupby('reg_datekey')['reg_diff'].max().reset_index()
 
     # reg_diff가 use_data_cnt 보다 큰 가입 일자만 가져오기
-    raw_data = raw_data.loc[raw_data.reg_diff < max_data_cnt]
-    reg_date_cond = raw_data.groupby('reg_datekey')['reg_diff'].max().reset_index()
-    df_s_reg_date_cond = reg_date_cond.loc[reg_date_cond.reg_diff >= use_data_cnt, 'reg_datekey'].dt.strftime('%Y-%m-%d')
-
+    df_s_reg_date_cond = reg_date_cond.loc[reg_date_cond.reg_diff >= min_data_cnt, 'reg_datekey'].dt.strftime('%Y-%m-%d')
     df_s = raw_data.loc[raw_data.reg_datekey.isin(df_s_reg_date_cond)]
 
-
-    # 전처리
+    # 일자 정보 스트링으로 변환
     df_s.reg_datekey = df_s.reg_datekey.dt.strftime('%Y-%m-%d')
     df_s.datekey = df_s.datekey.dt.strftime('%Y-%m-%d')
 
@@ -73,33 +78,29 @@ def make_sample_data(raw_data, use_data_cnt, max_data_cnt = 30):
 
 def ff2(df, predict_date_range, reg_date_range, window_days=7):
     '''
-    DAU, Retention등, 예측할 일자까지 저장하기
-    '''
-    '''
-    :param df: from Bigquery 
+    :param df: from Bigquery after make_sample_data()
     :param window_days: moving averaging - ARPU window size
+    :param predict_date_range: 예측일자 정보
+    :param reg_date_range: 가입일자 정보
+
     :return:
       real: 실제 매출액
       pred_ratio: ratio function 예측 매출액
     '''
-    # 론칭 후 6일 (0 ~ 6일 7개 데이터)만 이용하기
-    use_data_cnt = 6
+
+    # 론칭 후 6일 (0 ~ 6일) 7개 데이터만 이용하기
+    min_data_cnt = 6
 
     # 분석에 사용할 데이터 df_s(df_sample) 로 정의
-    df_s = make_sample_data(raw_data = df, use_data_cnt= use_data_cnt)
+    df_s = make_sample_data(raw_data = df, min_data_cnt = min_data_cnt)
     colnames = df_s.reg_datekey.unique()  # 가입일 정보
-    ncol = len(colnames) # 컬럼 수
-
-    N = df_s.reg_diff.max() + 1  # 데이터 갯수 최댓값
-    M = 30  # df.groupby('reg_datekey')['reg_diff'].max().min()
-    NAN_start = df_s.datekey.max()
+    NAN_start = df_s.datekey.max() # NAN이 시작되는 위치 정보 (+1 해줘야 함)
 
     df_N = df_s.groupby('reg_datekey')['reg_diff'].max()  # 가입일별 데이터 갯수
     df_N = pd.DataFrame(df_N.values).T
     df_N.columns = colnames
 
     ######################## 유리 함수 curve_fit ########################
-
     # Ratio Function 정의
     def func(x, b, c):
         return 1 / (b * x + c)
@@ -142,14 +143,6 @@ def ff2(df, predict_date_range, reg_date_range, window_days=7):
         DAU = pd.concat([DAU1, DAU2])
         DAU_hat_ratio[col] = DAU
 
-        # for j in range(len(predict_date_range)):
-        #     # if j <= df_N[col].values :  # N
-        #     #     DAU_hat_ratio.loc[predict_date_range[j], col] = DAU.loc[predict_date_range[j]].values
-        #
-        #     if j > df_N[col].values and j + 1 < len(predict_date_range):  # N
-        #         DAU_hat_ratio.loc[predict_date_range[j], col] = DAU_hat_ratio.loc[col, col] * ratio_func_fit.loc[
-        #             predict_date_range[j + 1], col]
-
         for col_idx in predict_date_range[predict_date_range.index(NAN_start)+1:]:
             DAU_hat_ratio.loc[col_idx, col] = DAU_hat_ratio.loc[col, col] * ratio_func_fit.loc[col_idx, col]
 
@@ -163,7 +156,6 @@ def ff2(df, predict_date_range, reg_date_range, window_days=7):
         ARPU_MA2 = pd.DataFrame(np.nan, index =index_hubo, columns = ['ARPU'])
 
         ARPU_MA = pd.concat([ARPU_MA, ARPU_MA2])
-
 
         ARPU_hat.loc[:, col] = ARPU_MA
 
@@ -181,7 +173,6 @@ def ff2(df, predict_date_range, reg_date_range, window_days=7):
 
 
     for col in colnames:
-
         # 기존에 이미 알고 있는 값
         temp_real_s = df_s.loc[df_s.reg_datekey == col, ['datekey', 'daily_revenue']].reset_index(drop=True)  # 실제 DAU값 가져오기
         temp_real_s.set_index('datekey', inplace = True)
@@ -226,24 +217,16 @@ pred_ratio, real = ff2(df, predict_date_range, reg_date_range, window_days=7)
 
 
 if multiple_predict:
-    for reg_datekey in reg_datekey_range:
-        reg_datekey_str = reg_datekey.strftime('%Y-%m-%d')
-        reg_datekey_30 = (reg_datekey + datetime.timedelta(days=29)).strftime('%Y-%m-%d')
-
-        query = load_query(project_name, reg_datekey_str)
+        # 쿼리 불러오기
+        query = load_query(multiple_predict, project_name, reg_datekey_str=reg_date_range,
+                           predict_min_date=predict_min_date, predict_max_date=predict_max_date)
 
         df = sqldf(query)
         df = df.fillna(0)
-        ## 전처리 --> 전체 유저들의 매출액
-        print(df.head(3))
 
-        df.reg_datekey = df.reg_datekey.dt.strftime('%Y-%m-%d')
-        df.datekey = df.datekey.dt.strftime('%Y-%m-%d')
-
-        real, pred_ratio = ff(df)
         ### 결과 저장
-        real_df.loc[reg_datekey_str:reg_datekey_30, reg_datekey_str] = real.values
-        pred_ratio_df.loc[reg_datekey_str:reg_datekey_30, reg_datekey_str] = pred_ratio.values
+        real, pred_ratio = ff2(df)
+
 
 
 np.abs(real_df - pred_ratio_df).sum(axis = 1)
